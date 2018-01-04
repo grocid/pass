@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+
+import ssl
+import sys
+import json
+import string
+import random
+import argparse
+
+import http.client
+
+CONFIG_PATH = "config.json"
+
+class Secret:
+
+    def __init__(self, addr, token, cert):
+        # Set SSL context to accept only TLS v1.2
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+        self.context.verify_mode = ssl.CERT_REQUIRED
+        self.context.load_verify_locations(cert)
+        # Setup connection
+        self.conn = http.client.HTTPSConnection(addr, context=self.context)
+        # Set Vault token
+        self.headers = {"X-Vault-Token": token}
+
+    def _fetch(self):
+        response = self.conn.getresponse()
+        return json.loads(response.read()).get("data")
+
+    def _json(self, username, password):
+        return "{\"password\": \"%s\", \"username\": \"%s\"}" % (password, username)
+
+    def get(self, name):
+        self.conn.request("GET", "/v1/secret/{}".format(name), headers=self.headers)
+        return self._fetch()
+
+    def put(self, name, username, password):
+        # Vault understands only this format
+        payload = self._json(username, password)
+        self.conn.request("PUT", "/v1/secret/{}".format(name), payload, self.headers)
+        self.conn.getresponse().read()
+
+    def gen(self, name, username):
+        password = ''.join(random.SystemRandom().choice(string.ascii_uppercase + string.digits) for _ in range(64))
+        print(json.loads(self._json(username, password)))
+        return self.put(name, username, password)
+
+    def list(self):
+        self.conn.request("LIST", "/v1/secret/", headers=self.headers)
+        return self._fetch().get("keys")
+
+
+class Client(object):
+
+    def __init__(self):
+
+        parser = argparse.ArgumentParser(
+            description='Password handler',
+            usage='''pass <command> [<args>]
+
+Available commands are:
+   get     Get credentials
+   put     Store credentials
+   gen     Generate password and store credentials
+   list    List credentials
+''')
+        parser.add_argument('command', help='Subcommand to run')
+        args = parser.parse_args(sys.argv[1:2])
+        if args.command.startswith("_") and not hasattr(self, args.command):
+            parser.print_help()
+            exit(1)
+        self._read_config()
+        self.secret = Secret(self.config.get("addr"), self.config.get("token"), self.config.get("cert"))
+        getattr(self, args.command)()
+
+    def _read_config(self):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                self.config = json.loads(f.read())
+        except:
+            exit(1)
+
+    def get(self):
+        parser = argparse.ArgumentParser(
+            description='Record changes to the repository')
+        parser.add_argument('name')
+        args = parser.parse_args(sys.argv[2:])
+        print(self.secret.get(args.name))
+
+    def put(self):
+        parser = argparse.ArgumentParser(
+            description='Record changes to the repository')
+        parser.add_argument('name')
+        parser.add_argument('username')
+        parser.add_argument('password')
+        args = parser.parse_args(sys.argv[2:])
+        self.secret.put(args.name, args.username, args.password)
+
+    def gen(self):
+        parser = argparse.ArgumentParser(
+            description='Record changes to the repository')
+        parser.add_argument('name')
+        parser.add_argument('username')
+        args = parser.parse_args(sys.argv[2:])
+        self.secret.gen(args.name, args.username)
+
+    def list(self):
+        parser = argparse.ArgumentParser(
+            description='Record changes to the repository')
+        args = parser.parse_args(sys.argv[2:])
+        for entry in self.secret.list():
+            print(" 🔑   %s" % entry)
+
+if __name__ == '__main__':
+    Client()
