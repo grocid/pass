@@ -25,7 +25,9 @@ class Secret:
 
     def _fetch(self):
         response = self.conn.getresponse()
-        return json.loads(response.read()).get("data")
+        payload = response.read()
+        if payload != None:
+            return json.loads(payload).get("data")
 
     def _json(self, username, password):
         return "{\"password\": \"%s\", \"username\": \"%s\"}" % (password, username)
@@ -45,9 +47,30 @@ class Secret:
         print(json.loads(self._json(username, password)))
         return self.put(name, username, password)
 
+    def delete(self, name):
+        self.conn.request("DELETE", "/v1/secret/{}".format(name), headers=self.headers)
+        response = self.conn.getresponse()
+        response.read()
+        if response.status == 204:
+            return 0
+        return 1
+
     def list(self):
         self.conn.request("LIST", "/v1/secret/", headers=self.headers)
         return self._fetch().get("keys")
+
+class FWAuth:
+
+    def __init__(self, addr, cert):
+        # Set SSL context to accept only TLS v1.2
+        self.context = ssl.SSLContext()
+        self.context.verify_mode = ssl.CERT_REQUIRED
+        self.context.load_verify_locations(cert)
+        # Setup connection
+        self.conn = http.client.HTTPSConnection(addr, context=self.context)
+
+    def auth(self, token):
+        self.conn.request("PUT", "/auth", json.dumps({"token" : str(token)}))
 
 
 class Client(object):
@@ -71,7 +94,10 @@ Available commands are:
             exit(1)
         self._read_config()
         self.secret = Secret(self.config.get("addr"), self.config.get("token"), self.config.get("cert"))
-        getattr(self, args.command)()
+        try:
+            getattr(self, args.command)()
+        except ssl.SSLEOFError:
+            print("error: not authenticated")
 
     def _read_config(self):
         try:
@@ -82,14 +108,14 @@ Available commands are:
 
     def get(self):
         parser = argparse.ArgumentParser(
-            description='Record changes to the repository')
+            description='Get credentials')
         parser.add_argument('name')
         args = parser.parse_args(sys.argv[2:])
         print(self.secret.get(args.name))
 
     def put(self):
         parser = argparse.ArgumentParser(
-            description='Record changes to the repository')
+            description='Store credentials')
         parser.add_argument('name')
         parser.add_argument('username')
         parser.add_argument('password')
@@ -98,7 +124,7 @@ Available commands are:
 
     def gen(self):
         parser = argparse.ArgumentParser(
-            description='Record changes to the repository')
+            description='Generate password and store credentials')
         parser.add_argument('name')
         parser.add_argument('username')
         args = parser.parse_args(sys.argv[2:])
@@ -106,10 +132,26 @@ Available commands are:
 
     def list(self):
         parser = argparse.ArgumentParser(
-            description='Record changes to the repository')
+            description='List credentials')
         args = parser.parse_args(sys.argv[2:])
         for entry in self.secret.list():
             print(" 🔑   %s" % entry)
+
+    def delete(self):
+        parser = argparse.ArgumentParser(
+            description='List credentials')
+        parser.add_argument('name')
+        args = parser.parse_args(sys.argv[2:])
+        exit(self.secret.delete(args.name))
+
+    def auth(self):
+        parser = argparse.ArgumentParser(
+            description='List credentials')
+        args = parser.parse_args(sys.argv[2:])
+        fw = FWAuth(self.config.get("auth_addr"), self.config.get("cert"))
+        fw.auth(input("Enter token: ").strip())
+
+
 
 if __name__ == '__main__':
     Client()
